@@ -2,6 +2,7 @@
 #include <cstring>
 #include <cstdio>
 #include <string>
+#include <map>
 #include <time.h>
 
 #include <switch.h>
@@ -47,7 +48,6 @@ extern "C"
         rc = hidInitialize();
         if (R_FAILED(rc))
             diagAbortWithResult(MAKERESULT(Module_Libnx, LibnxError_InitFail_HID));
-
     }
 
     void __appExit(void)
@@ -61,14 +61,14 @@ extern "C"
 
 void WriteToLog(std::string message)
 {
-    FILE *fp = fopen("sdmc:/sys-reader.log", "a");
+    FILE *fp = fopen("sdmc:/nxreader.log", "a");
 
     time_t unixTime = time(NULL);
     struct tm* timeStruct = gmtime((const time_t *)&unixTime);
 
-    int hours = timeStruct->tm_hour;
-    int minutes = timeStruct->tm_min;
-    int seconds = timeStruct->tm_sec;
+    int hours = timeStruct-> tm_hour;
+    int minutes = timeStruct-> tm_min;
+    int seconds = timeStruct-> tm_sec;
 
     fprintf(fp, "%02i:%02i:%02i   ", hours, minutes, seconds);
     fprintf(fp, message.c_str());
@@ -118,6 +118,7 @@ int main(int argc, char **argv)
     padConfigureInput(1, HidNpadStyleSet_NpadStandard);
     PadState pad;
     padInitializeDefault(&pad);
+    hidInitializeTouchScreen();
 
     bool recording = false;
 
@@ -126,6 +127,12 @@ int main(int argc, char **argv)
 
         padUpdate(&pad);
         u64 kDown = padGetButtonsDown(&pad);
+
+        if (kDown & HidNpadButton_ZL && kDown & HidNpadButton_ZR && kDown & HidNpadButton_L && kDown & HidNpadButton_R)
+        {
+            fclose(fopen("sdmc:/nxreader.log", "w"));
+            flashLed();
+        }
 
         if (kDown & HidNpadButton_ZL && kDown & HidNpadButton_ZR)
         {
@@ -143,6 +150,17 @@ int main(int argc, char **argv)
 
         if (recording)
         {
+
+            HidTouchScreenState state = {0};
+            if (hidGetTouchScreenStates(&state, 1)) {
+                for(s32 i = 0; i < state.count; i++)
+                {
+                    std::string TouchStateX = std::to_string(state.touches[i].x);
+                    std::string TouchStateY = std::to_string(state.touches[i].y);
+                    WriteToLog("X = " + TouchStateX + ", Y = " + TouchStateY);
+                }
+            }
+
             if (kDown & HidNpadButton_X)
             {
                 WriteToLog("X");
