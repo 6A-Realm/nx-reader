@@ -2,15 +2,14 @@
 #include <cstring>
 #include <cstdio>
 #include <string>
-#include <map>
 #include <time.h>
-
 #include <switch.h>
 
 #define INNER_HEAP_SIZE 0x80000
 
 extern "C"
 {
+    // Settings
     u32 __nx_applet_type = AppletType_None;
     u32 __nx_fs_num_sessions = 1;
     size_t nx_inner_heap_size = INNER_HEAP_SIZE;
@@ -25,63 +24,67 @@ extern "C"
         fake_heap_end = (char *)addr + size;
     }
 
+    // All initalizing code ran on startup
     void __appInit(void)
     {
-        if (R_FAILED(smInitialize()))
-        {
-            fatalThrow(MAKERESULT(Module_Libnx, LibnxError_InitFail_SM));
-        }
-        Result rc = setsysInitialize();
-        if (R_SUCCEEDED(rc))
-        {
-            SetSysFirmwareVersion fw;
-            rc = setsysGetFirmwareVersion(&fw);
-            if (R_SUCCEEDED(rc))
-                hosversionSet(MAKEHOSVERSION(fw.major, fw.minor, fw.micro));
-            setsysExit();
-        }
-        rc = fsInitialize();
-        if (R_FAILED(rc))
-            diagAbortWithResult(MAKERESULT(Module_Libnx, LibnxError_InitFail_FS));
+        smInitialize();
+        setsysInitialize();
+        SetSysFirmwareVersion fw;
+        setsysGetFirmwareVersion(&fw);
+        hosversionSet(MAKEHOSVERSION(fw.major, fw.minor, fw.micro));
+        setsysExit();
+        fsInitialize();
         fsdevMountSdmc();
-
-        rc = hidInitialize();
-        if (R_FAILED(rc))
-            diagAbortWithResult(MAKERESULT(Module_Libnx, LibnxError_InitFail_HID));
+        hidInitialize();
+        hidsysInitialize();
+        
     }
 
+    // All exiting code
     void __appExit(void)
     {
         hidExit();
         fsdevUnmountAll();
         fsExit();
         smExit();
+        hidsysExit();
     }
 }
 
+// Changing varible that will store last pressed button's time
+int OldTime = 0;
+
+// Write to file in format `wait time, pressed button`
 void WriteToLog(std::string message)
 {
-    FILE *fp = fopen("sdmc:/nxreader.log", "a");
+    FILE *FilePath = fopen("sdmc:/nxreader.log", "a");
 
+    // Get current runtime
     time_t unixTime = time(NULL);
     struct tm* timeStruct = gmtime((const time_t *)&unixTime);
 
-    int hours = timeStruct-> tm_hour;
-    int minutes = timeStruct-> tm_min;
-    int seconds = timeStruct-> tm_sec;
+    int CurrentHour = timeStruct-> tm_hour;
+    int CurrentMinutes = timeStruct-> tm_min;
+    int CurrentSeconds = timeStruct-> tm_sec;
+    
+    // Mass convert to seconds
+    int SecondsConverter = (((CurrentHour * 3600) + (CurrentMinutes * 60) + CurrentSeconds));
+    int TimeDifference = (SecondsConverter - OldTime);
 
-    fprintf(fp, "%02i:%02i:%02i   ", hours, minutes, seconds);
-    fprintf(fp, message.c_str());
-    fprintf(fp, "\n");
+    fprintf(FilePath, "Wait: %03i   ", TimeDifference);
+    fprintf(FilePath, message.c_str());
+    fprintf(FilePath, "\n");
+    fclose(FilePath);
 
-    fclose(fp);
+    OldTime = SecondsConverter;
 }
 
-static const HidsysNotificationLedPattern breathingpattern = {
+// Yeeted from sys botbase, custom blinking pattern.
+static const HidsysNotificationLedPattern LedFlashPattern = {
     .baseMiniCycleDuration = 0x8,
     .totalMiniCycles = 0x2,
     .totalFullCycles = 0x2,
-    .startIntensity = 0x2,
+    .startIntensity = 0x3,
     .miniCycles = {
         {
             .ledIntensity = 0xF,
@@ -91,168 +94,163 @@ static const HidsysNotificationLedPattern breathingpattern = {
     },
 };
 
-static void sendPatternStatic(const HidsysNotificationLedPattern* pattern)
+static void FlashLed(const HidsysNotificationLedPattern* pattern)
 {
     s32 total_entries;
     HidsysUniquePadId unique_pad_ids[2]={0};
 
-    Result rc = hidsysGetUniquePadsFromNpad(HidNpadIdType_Handheld, unique_pad_ids, 2, &total_entries);
-    if (R_FAILED(rc))
-        return;
+    hidsysGetUniquePadsFromNpad(HidNpadIdType_Handheld, unique_pad_ids, 2, &total_entries);
 
     for (int i = 0; i < total_entries; i++)
-        rc = hidsysSetNotificationLedPattern(pattern, unique_pad_ids[i]);
-}
-
-void flashLed()
-{
-    Result rc = hidsysInitialize();
-    if (R_FAILED(rc))
-        fatalThrow(rc);
-    sendPatternStatic(&breathingpattern);
-    hidsysExit();
+        hidsysSetNotificationLedPattern(pattern, unique_pad_ids[i]);
 }
 
 int main(int argc, char **argv)
 {
+    // Configure and initialize all gamepads and screens
     padConfigureInput(1, HidNpadStyleSet_NpadStandard);
     PadState pad;
     padInitializeDefault(&pad);
     hidInitializeTouchScreen();
 
+    // Start recording when told to record
     bool recording = false;
 
     while (appletMainLoop())
     {
 
         padUpdate(&pad);
-        u64 kDown = padGetButtonsDown(&pad);
+        u64 KeyDown = padGetButtonsDown(&pad);
 
-        if (kDown & HidNpadButton_ZL && kDown & HidNpadButton_ZR && kDown & HidNpadButton_L && kDown & HidNpadButton_R)
+        // Press L and R buttons simultaneously to clear logs
+        if (KeyDown & HidNpadButton_L && KeyDown & HidNpadButton_R)
         {
+            // Open files in "w" mode will clear the file
             fclose(fopen("sdmc:/nxreader.log", "w"));
-            flashLed();
+            FlashLed(&LedFlashPattern);
         }
 
-        if (kDown & HidNpadButton_ZL && kDown & HidNpadButton_ZR)
+        // Press ZL and ZR simultaneously to start/stop recording
+        if (KeyDown & HidNpadButton_ZL && KeyDown & HidNpadButton_ZR)
         {
+
+            // Flip between true and false
             recording = !recording;
 
             if (recording)
             {
                 WriteToLog("Recording...");
-                flashLed();
             } else {
                 WriteToLog("No longer recording...");
-                flashLed();
             }
+            FlashLed(&LedFlashPattern);
+
         }
 
         if (recording)
         {
 
+            // Check for touch screen presses
             HidTouchScreenState state = {0};
             if (hidGetTouchScreenStates(&state, 1)) {
                 for(s32 i = 0; i < state.count; i++)
                 {
+                    // Convert to strings so it can be written into file
                     std::string TouchStateX = std::to_string(state.touches[i].x);
                     std::string TouchStateY = std::to_string(state.touches[i].y);
-                    WriteToLog("X = " + TouchStateX + ", Y = " + TouchStateY);
+                    WriteToLog("Touch: X-AXIS = " + TouchStateX + ", Y-AXIS = " + TouchStateY);
                 }
             }
 
-            if (kDown & HidNpadButton_X)
+            // Check for button presses
+            if (KeyDown & HidNpadButton_X)
             {
-                WriteToLog("X");
+                WriteToLog("Press: X");
             }
 
-            if (kDown & HidNpadButton_A)
+            if (KeyDown & HidNpadButton_A)
             {
-                WriteToLog("A");
+                WriteToLog("Press: A");
             }
 
-            if (kDown & HidNpadButton_B)
+            if (KeyDown & HidNpadButton_B)
             {
-                WriteToLog("B");
+                WriteToLog("Press: B");
             }
 
-            if (kDown & HidNpadButton_Y)
+            if (KeyDown & HidNpadButton_Y)
             {
-                WriteToLog("Y");
+                WriteToLog("Press: Y");
             }
 
-            if (kDown & HidNpadButton_Plus)
+            if (KeyDown & HidNpadButton_Plus)
             {
-                WriteToLog("PLUS");
+                WriteToLog("Press: PLUS");
             }
 
-            if (kDown & HidNpadButton_Minus)
+            if (KeyDown & HidNpadButton_Minus)
             {
-                WriteToLog("MINUS");
+                WriteToLog("Press: MINUS");
             }
 
-            if (kDown & HidNpadButton_Up)
+            if (KeyDown & HidNpadButton_Up)
             {
-                WriteToLog("DUP");
+                WriteToLog("Press: DUP");
             }
 
-            if (kDown & HidNpadButton_Right)
+            if (KeyDown & HidNpadButton_Right)
             {
-                WriteToLog("DRIGHT");
+                WriteToLog("Press: DRIGHT");
             }
 
-            if (kDown & HidNpadButton_Down)
+            if (KeyDown & HidNpadButton_Down)
             {
-                WriteToLog("DDOWN");
+                WriteToLog("Press: DDOWN");
             }
 
-            if (kDown & HidNpadButton_Left)
+            if (KeyDown & HidNpadButton_Left)
             {
-                WriteToLog("DLEFT");
+                WriteToLog("Press: DLEFT");
             }
 
-            if (kDown & HidNpadButton_L)
+            if (KeyDown & HidNpadButton_L)
             {
-                WriteToLog("L");
+                WriteToLog("Press: L");
             }
 
-            if (kDown & HidNpadButton_ZL)
+            if (KeyDown & HidNpadButton_ZL)
             {
-                WriteToLog("ZL");
+                WriteToLog("Press: ZL");
             }
 
-            if (kDown & HidNpadButton_R)
+            if (KeyDown & HidNpadButton_R)
             {
-                WriteToLog("R");
+                WriteToLog("Press: R");
             }
 
-            if (kDown & HidNpadButton_ZR)
+            if (KeyDown & HidNpadButton_ZR)
             {
-                WriteToLog("ZR");
+                WriteToLog("Press: ZR");
             }
 
-            if (kDown & HidNpadButton_StickL)
+            if (KeyDown & HidNpadButton_StickL)
             {
-                WriteToLog("LSTICK");
+                WriteToLog("Press: LSTICK");
             }
 
-            if (kDown & HidNpadButton_StickR)
+            if (KeyDown & HidNpadButton_StickR)
             {
-                WriteToLog("RSTICK");
-            }
-                        
-            if (kDown & HiddbgNpadButton_Home)
-            {
-                WriteToLog("HOME");
+                WriteToLog("Press: RSTICK");
             }
 
-            if (kDown & HiddbgNpadButton_Capture)
+            if (KeyDown & HiddbgNpadButton_Home)
             {
-                WriteToLog("CAPTURE");
+                WriteToLog("Press: HOME");
             }
         }
-
+        // Wait to prevent issues
         svcSleepThread(1e+8L);
     }
+    // Cleanup
     return 0;
 }

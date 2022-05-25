@@ -44,7 +44,8 @@ OUTDIR		:=	switch
 DATA		:=	data
 INCLUDES	:=	include
 #ROMFS	:=	romfs
-
+APP_TITLE	:= nx-reader
+NO_NACP		:=	NO_NACP
 #---------------------------------------------------------------------------------
 # options for code generation
 #---------------------------------------------------------------------------------

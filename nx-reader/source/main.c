@@ -1,68 +1,52 @@
 #include <string.h>
 #include <stdio.h>
-#include <errno.h>
-
 #include <switch.h>
-
-void printfile(const char* path)
-{
-    FILE* f = fopen(path, "r");
-    if (f)
-    {
-        char mystring[100];
-        while (fgets(mystring, sizeof(mystring), f))
-        {
-            int a = strlen(mystring);
-            if (mystring[a-1] == '\n')
-            {
-                mystring[a-1] = 0;
-                if (mystring[a-2] == '\r')
-                    mystring[a-2] = 0;
-            }
-            puts(mystring);
-        }
-        printf(">>EOF<<\n");
-        fclose(f);
-    } else {
-        printf("errno is %d, %s\n", errno, strerror(errno));
-    }
-}
 
 int main(int argc, char **argv)
 {
     consoleInit(NULL);
 
-    // Configure our supported input layout: a single player with standard controller styles
+    // Configure input layout
     padConfigureInput(1, HidNpadStyleSet_NpadStandard);
 
-    // Initialize the default gamepad (which reads handheld mode inputs as well as the first connected controller)
+    // Initialize the default gamepad
     PadState pad;
     padInitializeDefault(&pad);
 
-    Result rc = fsInitialize();
-    if (R_FAILED(rc))
-        printf("fsInit: %08X\n", rc);
-    else
-    {
-        printfile("sdmc:/nxreader.log");
-
-    }
+    printf("Press PLUS to exit.\nPress MINUS to view logs/refresh.");
 
     // Main loop
     while(true)
     {
-        // Scan the gamepad. This should be done once for each frame
         padUpdate(&pad);
+        u64 KeyDown = padGetButtonsDown(&pad);
 
-        // padGetButtonsDown returns the set of buttons that have been newly pressed in this frame compared to the previous one
-        u64 kDown = padGetButtonsDown(&pad);
-
-        if (kDown & HidNpadButton_Plus) break; // break in order to return to hbmenu
-
+        // Press Plus (+) button to exit out of app
+        if (KeyDown & HidNpadButton_Plus) break;
         consoleUpdate(NULL);
-    }
 
-    romfsExit();
+        // Press Minus (-) button to print logs
+        if (KeyDown & HidNpadButton_Minus)
+        {
+            consoleClear();
+
+            // Open file
+            fsInitialize();
+            FILE* fp = fopen("sdmc:/nxreader.log", "r");
+            char FileString[100];
+            
+            // Print next line if its not the end
+            while (fgets(FileString, 100, fp))
+            {
+                puts(FileString);
+            }
+            printf("**END OF LOGS, OPEN ON PC TO VIEW FULL LOGS**\n");
+
+            // Close file
+            fclose(fp);
+            romfsExit();
+        }
+    }
     consoleExit(NULL);
     return 0;
 }
